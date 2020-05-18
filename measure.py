@@ -15,8 +15,6 @@ DURATION = 0.05
 NUM_SAMPLES = RATE * DURATION
 CHUNK = 4096
 
-THRESHOLD = 100
-
 p = pyaudio.PyAudio()
 
 sin_samples = (np.sin(2*np.pi*np.arange(NUM_SAMPLES)*FREQUENCY/RATE)).astype(np.float32)
@@ -33,7 +31,7 @@ def chirp():
     last_chirp = time.time()
 
 PEAK_WIDTH = 100
-SD_THRESHOLD = 250
+SD_THRESHOLD = 1000
 MP_THRESHOLD = 0.85
 
 def monitor():
@@ -51,7 +49,7 @@ def monitor():
         shadow_peaks = list(takewhile(lambda i: i != peak_index, list(find_peaks(crossed)[0])))
 
 
-        if len(peaks) > 0 and peak_index + idx - peaks[-1] < (NUM_SAMPLES * 2):
+        if len(peaks) > 0 and peak_index + idx - peaks[-1] < RATE:
             # TODO: replace? indoor shadowing effect
             idx += CHUNK
             continue
