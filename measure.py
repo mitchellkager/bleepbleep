@@ -1,106 +1,105 @@
 import pyaudio
 import numpy as np
-import signal
-import sys
-import time
 import threading
+from scipy.signal import correlate, find_peaks
+import time
+from itertools import takewhile
 
+RATE = 44100
+
+COS_FREQUENCY = 2000
+COS_DURATION = 0.05
+
+FREQUENCY = 6000
+DURATION = 0.05
+NUM_SAMPLES = RATE * DURATION
 CHUNK = 4096
-RATE = 119200
-FREQUENCY = 14000
-FREQUENCY_A = 16000
-FREQUENCY_B = 12000
-THRESHOLD = 100000
-VOLUME = 1
-DURATION = 0.1
+
+THRESHOLD = 100
 
 p = pyaudio.PyAudio()
 
-# both await A0
-AWAIT_A0 = 0
-# only A await B0
-AWAIT_B0 = 1
-# only B awaits A1
-AWAIT_A1 = 2
-
-MODE_A = 0
-MODE_B = 1
-
-t0 = None
-t1 = None
-
-def play_tone():
-    out_stream.write(1*samples)
-
-def monitor(mode):
-    global t0
-    global t1
-    status = AWAIT_A0 if mode == MODE_B else AWAIT_B0
-    mic_stream = p.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True,
-      frames_per_buffer=CHUNK)
-    while True:
-        data = np.frombuffer(mic_stream.read(CHUNK),dtype=np.int16)
-        fft = abs(np.fft.fft(data).real)
-        fft = fft[:int(len(fft)/2)]
-        freq = np.fft.fftfreq(CHUNK,1.0/RATE)
-        freq = freq[:int(len(freq)/2)]
-        assert freq[-1]>FREQUENCY, "ERROR: increase chunk size"
-        if mode == MODE_A:
-            val = fft[np.where((freq>FREQUENCY_B) & (freq<FREQUENCY_A))[0][0]]
-        else:
-            val = fft[np.where(freq>FREQUENCY_A)[0][0]]
-        if val > THRESHOLD:
-            if status == AWAIT_A0:
-                # we are B: A has messaged us first
-                play_tone()
-                t0 = time.time()
-                status = AWAIT_A1
-            elif status == AWAIT_B0:
-                # we are A: B has responded to us
-                t1 = time.time()
-                play_tone()
-                break
-            elif status == AWAIT_A1:
-                # we are B: A has messaged us again
-                t1 = time.time()
-                break
-            else:
-                break
-
-    mic_stream.stop_stream()
-    mic_stream.close()
-
-
-if len(sys.argv) < 2:
-    print('please provide \'a\' or \'b\'')
-    exit(-1)
-
-if sys.argv[1] == 'a':
-    out_freq = FREQUENCY_A
-    mode = MODE_A
-elif sys.argv[1] == 'b':
-    out_freq = FREQUENCY_B
-    mode = MODE_B
-else:
-    print('only provide \'a\' or \'b\'')
-    exit(-1)
-
-listen_thread = threading.Thread(target=monitor, args=[mode])
-listen_thread.start()
-
-samples = (np.sin(2*np.pi*np.arange(RATE*DURATION)*out_freq/RATE)).astype(np.float32)
+sin_samples = (np.sin(2*np.pi*np.arange(NUM_SAMPLES)*FREQUENCY/RATE)).astype(np.float32)
+cos_samples = (np.cos(2*np.pi*np.arange(RATE*COS_DURATION)*COS_FREQUENCY/RATE)).astype(np.float32)
 out_stream = p.open(format=pyaudio.paFloat32,
                 channels=1,
                 rate=RATE,
                 output=True)
 
+def chirp():
+    print('CHIRP!')
+    out_stream.write(cos_samples)
+    out_stream.write(sin_samples)
+    last_chirp = time.time()
 
-if mode == MODE_A:
-    input("Enter to begin")
-    play_tone()
-    t0 = time.time()
-else:
-    print('I am device B')
+PEAK_WIDTH = 100
+SD_THRESHOLD = 250
+MP_THRESHOLD = 0.85
+
+def monitor():
+    mic_stream = p.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True,
+      frames_per_buffer=CHUNK)
+    prev = np.frombuffer(mic_stream.read(CHUNK),dtype=np.int16)
+    peaks = []
+    idx = 0
+    while True:
+        data = np.frombuffer(mic_stream.read(CHUNK),dtype=np.int16)
+
+        crossed = list(correlate(data, sin_samples))
+        peak_index = crossed.index(max(crossed))
+
+        shadow_peaks = list(takewhile(lambda i: i != peak_index, list(find_peaks(crossed)[0])))
+
+
+        if len(peaks) > 0 and peak_index + idx - peaks[-1] < (NUM_SAMPLES * 2):
+            # TODO: replace? indoor shadowing effect
+            idx += CHUNK
+            continue
+
+        white_window = prev[:PEAK_WIDTH]
+
+        if peak_index + (PEAK_WIDTH/2) >= len(crossed):
+            peak_window = crossed[-PEAK_WIDTH:]
+        elif peak_index - (PEAK_WIDTH/2) < 0:
+            peak_window = crossed[:PEAK_WIDTH]
+        else:
+            peak_window = crossed[int(peak_index-(PEAK_WIDTH/2)):int(peak_index+(PEAK_WIDTH/2))]
+
+        l2_peak = np.linalg.norm(peak_window)
+        l2_white = np.linalg.norm(white_window)
+
+        if l2_peak / l2_white > SD_THRESHOLD:
+            print('think we got one?')
+            if len(peaks) < 2:
+                if shadow_peaks != []:
+                    sharp_record = 0
+                    sharpness = {}
+                    for shadow_peak in shadow_peaks:
+                        sp_window = crossed[max(0,int(shadow_peak - PEAK_WIDTH/2)):min(len(crossed)-1,int(shadow_peak + PEAK_WIDTH/2))]
+                        sharpness[shadow_peak] = crossed[shadow_peak] / (sum(sp_window) / len(sp_window))
+                    max_sharpness = max(sharpness.values())
+                    for shadow_peak in shadow_peaks:
+                        if sharpness[shadow_peak] >= max_sharpness * MP_THRESHOLD:
+                            peak_index = shadow_peak
+                            break
+                print('got one')
+                peaks.append(idx+peak_index)
+                if len(peaks) == 2:
+                    print(peaks)
+
+
+        idx += CHUNK
+        prev = data
+
+
+    mic_stream.stop_stream()
+    mic_stream.close()
+
+listen_thread = threading.Thread(target=monitor, args=[])
+listen_thread.start()
+
+input("Enter to chirp")
+chirp()
 
 listen_thread.join()
 
@@ -110,6 +109,4 @@ out_stream.close()
 p.terminate()
 
 sos = 343.0
-rtt = t1 - t0
-print(rtt)
-print((rtt) * (sos/2))
+print('a')
