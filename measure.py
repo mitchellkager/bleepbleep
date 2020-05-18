@@ -66,7 +66,7 @@ def monitor():
         l2_peak = np.linalg.norm(peak_window)
         l2_white = np.linalg.norm(white_window)
 
-        if l2_peak / l2_white > SD_THRESHOLD:
+        if l2_white != 0 and l2_peak / l2_white > SD_THRESHOLD:
             if len(peaks) < 2:
                 if shadow_peaks != []:
                     sharp_record = 0
