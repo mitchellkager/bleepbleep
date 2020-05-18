@@ -31,7 +31,7 @@ def chirp():
     last_chirp = time.time()
 
 PEAK_WIDTH = 100
-SD_THRESHOLD = 1000
+SD_THRESHOLD = 500
 MP_THRESHOLD = 0.85
 
 def monitor():
@@ -67,7 +67,6 @@ def monitor():
         l2_white = np.linalg.norm(white_window)
 
         if l2_peak / l2_white > SD_THRESHOLD:
-            print('think we got one?')
             if len(peaks) < 2:
                 if shadow_peaks != []:
                     sharp_record = 0
@@ -80,10 +79,9 @@ def monitor():
                         if sharpness[shadow_peak] >= max_sharpness * MP_THRESHOLD:
                             peak_index = shadow_peak
                             break
-                print('got one')
                 peaks.append(idx+peak_index)
                 if len(peaks) == 2:
-                    print(peaks)
+                    print(peaks, peaks[1] - peaks[0])
 
 
         idx += CHUNK
